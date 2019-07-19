@@ -1,0 +1,288 @@
+-- FUNCTION: public.load_format_is_nickscript1()
+-- DROP FUNCTION: public.load_format_is_nickscript1()
+
+delete from stagegameflattable_nickscript;
+
+copy stagegameflattable_nickscript
+from 'C:\XferData\ChoctawData\Choctaw-ImportData.csv'
+CSV Header;
+
+--DimEnterprise----------------------------------------------------------------------------------------------------------------------------------------
+
+insert into dimenterprise(casino , enterprise, enterprisekey)
+select distinct a.casino , a.enterprise, a.enterprisekey
+from stagegameflattable_nickscript a
+left join dimenterprise b on a.casino = b.casino
+                    and a.enterprise = b.enterprise
+                    and a.enterprisekey = b.enterprisekey
+where b.casino is null
+  and b.enterprise is null
+  and b.enterprisekey is null
+;
+
+--DimAsset
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+insert into dimasset(assettag , egmserial, configuration, currentdescription, theme, denomination, classification,area,bank,stand)
+    select distinct a.assettag , a.egmserial, a.configuration, a.currentdescription, a.theme, a.denomination, a.classification,a.area,a.bank,a.stand
+    from stagegameflattable_nickscript a
+    left join dimasset b on trim(coalesce(a.assettag,'-'))           = trim(coalesce(b.assettag,'-'))
+                        and trim(coalesce(a.bank,'-'))               = trim(coalesce(b.bank,'-'))
+                        and trim(coalesce(a.egmserial,'-'))          = trim(coalesce(b.egmserial,'-'))
+                        and trim(coalesce(a.configuration,'-'))      = trim(coalesce(b.configuration,'-'))
+                        and trim(coalesce(a.currentdescription,'-')) = trim(coalesce(b.currentdescription,'-'))
+                        and trim(coalesce(a.theme,'-'))              = trim(coalesce(b.theme,'-'))
+                        and      coalesce(a.denomination,'-')    =      coalesce(b.denomination,'-')
+                        and trim(coalesce(a.classification,'-'))     = trim(coalesce(b.classification,'-'))
+                        and trim(coalesce(a.stand,'-'))              = trim(coalesce(b.stand,'-'))
+
+    where b.assettag is null
+      and b.egmserial is null
+      and b.configuration is null
+      and b.currentdescription is null
+      and b.theme is null
+      and b.denomination is null
+      and b.classification is null
+;
+-- END of FUNCTION: public.load_format_is_nickscript1()
+
+
+-- FUNCTION: public.load_format_is_nickscript2()
+-- DROP FUNCTION: public.load_format_is_nickscript2()
+
+--FactGamePerformance  ------------------------------------------------------------------------------------------------------------
+
+--Pulls a clean list of items that currently exist in the database
+-- SESSION 1
+START TRANSACTION;
+SET SESSION TRANSACTION ISOLATION LEVEL Read committed;
+	create table tmp_currentdata as 
+	select distinct 
+		   trim(coalesce(d.Enterprise,'-')) as Enterprise
+		 , trim(coalesce(d.casino,'-'))     as Casino
+		 , trim(coalesce(b.egmserial,'-'))  as EGMSerial
+		 , trim(coalesce(b.area,'-'))       as Area
+		 , trim(coalesce(b.bank,'-'))       as Bank
+		 , trim(coalesce(b.stand,'-'))      as Stand
+		 , coalesce(TO_CHAR(e.date_actual,'yyyymmdd'),'-')  as DateID
+		 , trim(coalesce(b.assettag,'-')) as Asset			 
+	from factgameperformance a
+	join dimasset b on a.dimassetid = b.dimassetid
+	join dimenterprise d on a.dimenterpriseid = d.dimenterpriseid
+	join dimdate e on a.auditdateid = e.dimdateid
+	;
+SELECT pg_sleep(5); -- 5 second delay
+
+COMMIT;
+
+-- END of FUNCTION: public.load_format_is_nickscript2()
+
+
+-- FUNCTION: public.load_format_is_nickscript3()
+-- DROP FUNCTION: public.load_format_is_nickscript3()
+
+--Creates a smaller flat table that contains only new data
+-- SESSION 2
+START TRANSACTION;
+SET SESSION TRANSACTION ISOLATION LEVEL Read committed;
+	create table tmp_stagegameflattable_nickscript as 
+		Select a.*
+		from stagegameflattable_nickscript a
+		left Join tmp_currentdata cd on trim(coalesce(a.Enterprise,'-')) = cd.Enterprise
+									and trim(coalesce(a.Casino,'-'))     = cd.Casino
+									and trim(coalesce(a.EGMSerial,'-'))  = cd.EGMSerial
+									and trim(coalesce(a.Area,'-'))       = cd.Area
+									and trim(coalesce(a.Bank,'-'))       = cd.Bank
+									and trim(coalesce(a.Stand,'-'))      = cd.Stand
+									and coalesce(TO_CHAR(a.auditdate,'yyyymmdd'),'-') = cd.DateID
+									and trim(coalesce(a.assettag,'-'))	 = cd.Asset			  
+		where cd.Enterprise is null
+		   or cd.Casino is null
+		   or cd.EGMSerial is null
+		   or cd.DateID is null
+		;
+COMMIT;
+-- END of FUNCTION: public.load_format_is_nickscript3()
+
+
+-- FUNCTION: public.load_format_is_nickscript4()
+-- DROP FUNCTION: public.load_format_is_nickscript4()
+
+insert into factgameperformance(dimassetid,  dimenterpriseid, auditdateid, chgfeedaily, chggcfee, chgwin, coinin, coinout, coinplayed, creditsplayed, daysactive, gamesplayed, netwin, projectedhold, twin, win)
+select min(b.dimassetid) as dimassetid
+     , min(d.dimenterpriseid) as dimenterpriseid
+     , e.dimdateid as auditdateid
+     , a.chgfeedaily
+     , a.chggcfee
+     , a.chgwin
+     , a.coinin
+	, case when a.coinin  is not null
+	        and a.coinout is null
+			and a.win     is not null
+           then a.coinin - a.win
+		   else a.coinout
+	  end
+	  as coinout
+     , a.coinplayed
+     , a.creditsplayed
+     , a.daysactive
+     , a.gamesplayed
+     , a.netwin
+     , a.projectedhold
+     , a.twin
+     , case when a.Coinin  is not null
+	         and a.Coinout is not null
+	         and a.win     is null
+	        then a.coinin - a.coinout
+	        else a.win
+	        end
+      as win
+ from TMP_stagegameflattable_nickscript a
+ join dimasset           b on case when a.assettag is null           then '-' else trim(a.assettag) end          = case when b.assettag is null           then '-' else  trim(b.assettag) end
+                          and case when a.egmserial is null          then '-' else trim(a.egmserial) end         = case when b.egmserial is null          then '-' else  trim(b.egmserial) end
+                          and case when a.configuration is null      then '-' else trim(a.configuration) end     = case when b.configuration is null      then '-' else  trim(b.configuration) end
+                          and case when a.currentdescription is null then '-' else trim(a.currentdescription)end = case when b.currentdescription is null then '-' else  trim(b.currentdescription) end
+                          and case when a.theme is null              then '-' else  trim(a.theme) end            = case when b.theme is null              then '-' else  trim(b.theme) end
+                          and case when a.denomination is null       then '$0.00' else  a.denomination end       = case when b.denomination is null       then '$0.00' else  b.denomination end
+                          and case when a.classification is null     then '-' else  trim(a.classification) end   = case when b.classification is null then '-' else  trim(b.classification) end
+                          and case when a.bank is null     then '-' else  trim(a.bank) end   = case when b.bank is null then '-' else  trim(b.bank) end                  
+join dimenterprise d on case when a.casino is null        then '-' else trim(a.casino) end        = case when d.casino is null        then '-' else  trim(d.casino) end
+                    and case when a.enterprise is null    then '-' else trim(a.enterprise) end    = case when d.enterprise is null    then '-' else  trim(d.enterprise) end
+                    and case when a.enterprisekey is null then '-' else trim(a.enterprisekey) end = case when d.enterprisekey is null then '-' else  trim(d.enterprisekey) end
+join dimdate e on a.auditdate = e.date_actual
+group by e.dimdateid 
+     , a.chgfeedaily
+     , a.chggcfee
+     , a.chgwin
+     , a.coinin
+	, case when a.coinin  is not null
+	        and a.coinout is null
+			and a.win     is not null
+           then a.coinin - a.win
+		   else a.coinout
+	  end
+     , a.coinplayed
+     , a.creditsplayed
+     , a.daysactive
+     , a.gamesplayed
+     , a.netwin
+     , a.projectedhold
+     , a.twin
+     , case when a.Coinin  is not null
+	         and a.Coinout is not null
+	         and a.win     is null
+	        then a.coinin - a.coinout
+	        else a.win
+	        end
+;
+-- END of FUNCTION: public.load_format_is_nickscript4()
+
+
+-- FUNCTION: public.load_format_is_nickscript5()
+-- DROP FUNCTION: public.load_format_is_nickscript5()
+
+----------------------------------------------------------------------------------------------------------------------------------------
+--Populate various lookups
+----------------------------------------------------------------------------------------------------------------------------------------
+update dimenterprise set "ParticipationRate" = .2 where casino like 'Nask%' and  "ParticipationRate" is null ;
+
+update factgameperformance
+set ParticipationRate = subq.ParticipationRate ,
+    DailyConnectionFee = subq.DailyConnectionFee ,
+	GCFeeRate = subq.GCFeeRate ,
+    SalesCommission = subq.SalesCommission 
+from (select fgp.factgameperformanceid
+           , max(le."ParticipationRate") as ParticipationRate
+      	   , max(le."DailyConnectionFee") as DailyConnectionFee
+	       , max(le."GCFeeRate") as GCFeeRate
+	       , max(le."SalesCommission") as SalesCommission
+      from dimenterprise de
+      join factgameperformance fgp on de.dimenterpriseid = fgp.dimenterpriseid
+      join dimdate ddt on ddt.dimdateid = fgp.auditdateid
+      join lu_enterprise le on le.enterprise = de.enterprise
+                           and ddt.date_actual >= le."StartDate"
+      					 and ddt.date_actual < le."EndDate"
+      where fgp.ParticipationRate is null or fgp.ParticipationRate = 0
+          or fgp.DailyConnectionFee is null or fgp.DailyConnectionFee = 0
+          or fgp.GCFeeRate is null or fgp.GCFeeRate = 0
+      group by fgp.factgameperformanceid
+	) subq
+where factgameperformance.factgameperformanceid = subq.factgameperformanceid
+and (  factgameperformance.ParticipationRate is null
+    or factgameperformance.DailyConnectionFee is null
+    or factgameperformance.GCFeeRate is null
+    or factgameperformance.ParticipationRate  = 0
+    or factgameperformance.DailyConnectionFee = 0
+    or factgameperformance.GCFeeRate = 0
+	)
+;
+
+--Update Conversion Date
+update dimasset 
+    set conversiondate = subq.conversiondate
+from (select distinct
+       b.dimassetid
+	 , t.conversiondate
+      from factgameperformance a
+      join dimasset b on a.dimassetid = b.dimassetid
+      join dimenterprise d on a.dimenterpriseid = d.dimenterpriseid
+      join lu_conversiondates t on t.casino = d.casino
+              and t.bank = b.bank) subq
+where dimasset.dimassetid = subq.dimassetid 
+and dimasset.conversiondate is null
+;
+
+--Update items that were converted to dates in the load
+update dimasset set bank = '03-03' where lower(bank) = '3-mar';
+update dimasset set bank = '01-01' where lower(bank) = '1-jan';
+update dimasset set bank = '12-12' where lower(bank) = '12-dec';  
+
+update dimenterprise
+set "ParticipationRate" = subq.ParticipationRate ,
+    "DailyConnectionFee" = subq.DailyConnectionFee ,
+	"GCFeeRate" = subq.GCFeeRate 
+from (select distinct de.dimenterpriseid, lue."ParticipationRate" as ParticipationRate, lue."DailyConnectionFee" as DailyConnectionFee, lue."GCFeeRate" as GCFeeRate
+      from dimenterprise de
+      join lu_enterprise lue on de.enterprise = lue.enterprise
+	) subq
+where dimenterprise.dimenterpriseid = subq.dimenterpriseid
+and (  dimenterprise."ParticipationRate" is null
+    or dimenterprise."DailyConnectionFee" is null
+    or dimenterprise."GCFeeRate" is null
+    or dimenterprise."ParticipationRate"  = 0
+    or dimenterprise."DailyConnectionFee" = 0
+    or dimenterprise."GCFeeRate" = 0
+	)
+;
+
+update dimasset
+set classification = subq.classification, 
+    mathset = subq.mathset , 
+	"LowDenom_PHold" = subq.lowdenom_phold , 
+	"MidDenom_PHold" = subq.middenom_phold , 
+	"HighDenom_PHold" = subq.highdenom_phold
+from (SELECT theme, classification, mathset, lowdenom_phold, middenom_phold, highdenom_phold
+      FROM public.lu_theme) subq
+where dimasset.theme = subq.theme
+and (dimasset.classification is null 
+     or dimasset.mathset is null
+	 or dimasset."LowDenom_PHold" is null
+	 or dimasset."MidDenom_PHold" is null
+	 or dimasset."HighDenom_PHold" is null)
+;
+-- END of FUNCTION: public.load_format_is_nickscript5()
+
+
+-- FUNCTION: public.load_format_is_nickscript6()
+-- DROP FUNCTION: public.load_format_is_nickscript6()
+
+--clean up
+--DROP TABLE public.stagegameflattable_nickscript;
+drop table tmp_currentdata;
+drop table tmp_stagegameflattable_nickscript; 
+
+
+ALTER FUNCTION public.load_format_is_nickscript()
+    OWNER TO postgres;
+
+-- END of FUNCTION: public.load_format_is_nickscript6()
